@@ -10,7 +10,10 @@ pub mod sphinx;
 pub use curve25519_dalek::montgomery::MontgomeryPoint;
 pub use curve25519_dalek::Scalar;
 pub use ed25519_dalek::SigningKey;
-pub use identity::{node_id_from_ed_pub, x25519_pub_from_clamped, Descriptor, NodeIdentity, DESC_LEN};
+pub use identity::{
+    node_id_from_ed_pub, x25519_pub_from_clamped, Descriptor, NodeIdentity, DESC_LEN,
+};
+pub use kdf::{derive_hdr_key, derive_traffic_keys, hdr_nonce, open, relay_nonce, seal};
 pub use kem::{kem_decap, kem_encap};
 
 /// ID node 160-bit: SHA-256(Ed25519 pub) cắt 20 byte đầu.

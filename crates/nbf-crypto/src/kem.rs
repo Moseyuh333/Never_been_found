@@ -3,7 +3,7 @@
 
 use crate::{CryptoError, CT_LEN, KEM_PK_LEN};
 use ml_kem::kem::{Decapsulate, Encapsulate};
-use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
+use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
 use rand_core::CryptoRngCore;
 
 type Ek = <MlKem768 as KemCore>::EncapsulationKey;
@@ -19,7 +19,10 @@ fn copy_arr<const N: usize>(slice: &[u8]) -> [u8; N] {
 }
 
 /// Bọc khóa: trả về (ciphertext 1088B, shared secret 32B).
-pub fn kem_encap(pk: &[u8; KEM_PK_LEN], rng: &mut impl CryptoRngCore) -> Result<([u8; CT_LEN], [u8; 32]), CryptoError> {
+pub fn kem_encap(
+    pk: &[u8; KEM_PK_LEN],
+    rng: &mut impl CryptoRngCore,
+) -> Result<([u8; CT_LEN], [u8; 32]), CryptoError> {
     let pk_arr = ml_kem::Encoded::<Ek>::from(*pk);
     let ek = Ek::from_bytes(&pk_arr);
     let (ct, ss): (Ct, Ss) = ek.encapsulate(rng).map_err(|_| CryptoError::Kem)?;

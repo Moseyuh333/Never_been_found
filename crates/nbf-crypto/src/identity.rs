@@ -7,8 +7,7 @@ use rand_core::CryptoRngCore;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr};
 
-pub const DESC_LEN: usize =
-    4 + 1 + 20 + 32 + 32 + 32 + KEM_PK_LEN + 4 + 2 + 2 + 8 + 64; // 1385
+pub const DESC_LEN: usize = 4 + 1 + 20 + 32 + 32 + 32 + KEM_PK_LEN + 4 + 2 + 2 + 8 + 64; // 1385
 const DESC_MAGIC: [u8; 4] = *b"NBFD";
 const DESC_VER: u8 = 1;
 
@@ -38,7 +37,15 @@ impl NodeIdentity {
         let sphinx_priv = crate::Scalar::random(rng);
         let sphinx_pub = crate::MontgomeryPoint::mul_base(&sphinx_priv).to_bytes();
         let (kem_sk, kem_pk) = kem_generate(rng);
-        Self { ed, link_priv, link_pub, sphinx_priv, sphinx_pub, kem_sk, kem_pk }
+        Self {
+            ed,
+            link_priv,
+            link_pub,
+            sphinx_priv,
+            sphinx_pub,
+            kem_sk,
+            kem_pk,
+        }
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -154,7 +161,8 @@ impl Descriptor {
 
         let vk = VerifyingKey::from_bytes(&ed_pub).map_err(|_| CryptoError::Ed25519)?;
         let sig_s = Signature::from_slice(&sig).map_err(|_| CryptoError::Ed25519)?;
-        vk.verify(&bytes[..DESC_LEN - 64], &sig_s).map_err(|_| CryptoError::Ed25519)?;
+        vk.verify(&bytes[..DESC_LEN - 64], &sig_s)
+            .map_err(|_| CryptoError::Ed25519)?;
         if node_id_from_ed_pub(&ed_pub) != node_id {
             return Err(CryptoError::Descriptor);
         }

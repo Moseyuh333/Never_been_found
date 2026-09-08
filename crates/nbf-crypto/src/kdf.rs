@@ -25,7 +25,11 @@ pub fn derive_hdr_key(ss_x: &[u8; 32], tag: &[u8; 16]) -> [u8; 32] {
 }
 
 /// Khóa traffic (fwd, bwd) của một hop = HKDF(X25519 ‖ ML-KEM) — PQC lai.
-pub fn derive_traffic_keys(ss_x: &[u8; 32], ss_kem: &[u8; 32], tag: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
+pub fn derive_traffic_keys(
+    ss_x: &[u8; 32],
+    ss_kem: &[u8; 32],
+    tag: &[u8; 16],
+) -> ([u8; 32], [u8; 32]) {
     let mut ikm = [0u8; 64];
     ikm[..32].copy_from_slice(ss_x);
     ikm[32..].copy_from_slice(ss_kem);
@@ -37,27 +41,47 @@ pub fn derive_traffic_keys(ss_x: &[u8; 32], ss_kem: &[u8; 32], tag: &[u8; 16]) -
 
 /// Nonce lớp header: vị trí trong chuỗi = giá trị `n` mà hop nhìn thấy.
 pub fn hdr_nonce(tag: &[u8; 16], n_field: u8) -> [u8; 12] {
-    let h = Sha256::new().chain_update(tag).chain_update(b"hdr").chain_update([n_field]).finalize();
+    let h = Sha256::new()
+        .chain_update(tag)
+        .chain_update(b"hdr")
+        .chain_update([n_field])
+        .finalize();
     h[..12].try_into().unwrap()
 }
 
 /// Nonce relay: (tag, chiều, số thứ tự) — seq đơn điệu từng chiều, chặn replay.
 pub fn relay_nonce(tag: &[u8; 16], dir: u8, seq: u32) -> [u8; 12] {
     debug_assert!(dir == DIR_FWD || dir == DIR_BWD);
-    let h = Sha256::new().chain_update(tag).chain_update([dir]).chain_update(seq.to_le_bytes()).finalize();
+    let h = Sha256::new()
+        .chain_update(tag)
+        .chain_update([dir])
+        .chain_update(seq.to_le_bytes())
+        .finalize();
     h[..12].try_into().unwrap()
 }
 
 pub fn seal(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Vec<u8> {
     let c = ChaCha20Poly1305::new(Key::from_slice(key));
-    c.encrypt(Nonce::from_slice(nonce), Payload { msg: plaintext, aad: b"nbf" })
-        .expect("mã hóa luôn thành công")
+    c.encrypt(
+        Nonce::from_slice(nonce),
+        Payload {
+            msg: plaintext,
+            aad: b"nbf",
+        },
+    )
+    .expect("mã hóa luôn thành công")
 }
 
 pub fn open(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let c = ChaCha20Poly1305::new(Key::from_slice(key));
-    c.decrypt(Nonce::from_slice(nonce), Payload { msg: ciphertext, aad: b"nbf" })
-        .map_err(|_| CryptoError::Aead)
+    c.decrypt(
+        Nonce::from_slice(nonce),
+        Payload {
+            msg: ciphertext,
+            aad: b"nbf",
+        },
+    )
+    .map_err(|_| CryptoError::Aead)
 }
 
 #[cfg(test)]
@@ -73,8 +97,14 @@ mod tests {
 
     #[test]
     fn doi_tag_hay_ss_thi_khoa_doi() {
-        assert_ne!(derive_hdr_key(&[1; 32], &[9; 16]), derive_hdr_key(&[1; 32], &[8; 16]));
-        assert_ne!(derive_hdr_key(&[1; 32], &[9; 16]), derive_hdr_key(&[2; 32], &[9; 16]));
+        assert_ne!(
+            derive_hdr_key(&[1; 32], &[9; 16]),
+            derive_hdr_key(&[1; 32], &[8; 16])
+        );
+        assert_ne!(
+            derive_hdr_key(&[1; 32], &[9; 16]),
+            derive_hdr_key(&[2; 32], &[9; 16])
+        );
     }
 
     #[test]
