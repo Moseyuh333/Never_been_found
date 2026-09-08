@@ -1,0 +1,19 @@
+[package]
+name = "nbf-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nbf"
+path = "src/main.rs"
+
+[dependencies]
+nbf-crypto.workspace = true
+nbf-dht.workspace = true
+nbf-net.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true

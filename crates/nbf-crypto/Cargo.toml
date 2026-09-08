@@ -1,0 +1,15 @@
+[package]
+name = "nbf-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+curve25519-dalek.workspace = true
+ml-kem.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true

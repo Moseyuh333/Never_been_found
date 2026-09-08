@@ -1,0 +1,1 @@
+//! KDF lai + nonce + AEAD — Task 3.

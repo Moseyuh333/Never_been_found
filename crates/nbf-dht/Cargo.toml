@@ -1,0 +1,11 @@
+[package]
+name = "nbf-dht"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nbf-crypto.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

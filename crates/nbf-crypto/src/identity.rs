@@ -1,0 +1,1 @@
+//! NodeIdentity + Descriptor — Task 2.
