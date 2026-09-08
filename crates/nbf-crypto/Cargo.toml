@@ -11,5 +11,6 @@ hkdf.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 rand.workspace = true
+rand_core.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
