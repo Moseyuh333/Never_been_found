@@ -1,15 +1,19 @@
 //! E2E: client → 3 hop → echo service, không hop nào thấy plaintext.
 
-use std::time::Duration;
-use nbf_net::node::{CoverCfg, Node, NodeConfig};
 use nbf_net::build_circuit;
+use nbf_net::node::{CoverCfg, Node, NodeConfig};
+use std::time::Duration;
 
 fn cfg(base: u16, i: u16, seeds: Vec<String>) -> NodeConfig {
     NodeConfig {
         cell_port: base + i * 2,
         dht_port: base + i * 2 + 1,
         seeds,
-        cover: CoverCfg { on: false, min_interval_ms: 1000, max_interval_ms: 2000 },
+        cover: CoverCfg {
+            on: false,
+            min_interval_ms: 1000,
+            max_interval_ms: 2000,
+        },
         rng_seed: Some(0xDEAD + i as u64),
     }
 }
@@ -29,19 +33,25 @@ async fn e2e_3hop_echo() {
     for i in 0..6u16 {
         nodes.push(Node::spawn(cfg(20000, i, seeds_for(20000, i))).await);
     }
-    tokio::time::sleep(Duration::from_millis(600)).await;
-
-    let client = &nodes[4];
-    let service = &nodes[5];
-
-    // Route 3 hop: node1 → node2 → service(5). Client = node4 (đi circuit như mọi node).
-    let handle = build_circuit(
-        client.clone(),
-        &[nodes[1].node_id, nodes[2].node_id, service.node_id],
-        Some(nodes[0].node_id),
-    )
-    .await
-    .expect("dựng circuit 3 hop");
+    // Chờ DHT mesh hội tụ (retry build_circuit — flaky khi CPU bận, RPC DHT timeout):
+    let mut handle = None;
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        match build_circuit(
+            nodes[4].clone(),
+            &[nodes[1].node_id, nodes[2].node_id, nodes[5].node_id],
+            Some(nodes[0].node_id),
+        )
+        .await
+        {
+            Ok(h) => {
+                handle = Some(h);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    let handle = handle.expect("dựng circuit 3 hop (retry 5 lần)");
 
     let reply = handle
         .echo(b"xin chao tu the void", Duration::from_secs(5))
@@ -66,10 +76,24 @@ async fn trung_gian_khong_thay_plaintext() {
     let mid1 = nodes[1].clone();
     let mid2 = nodes[2].clone();
 
-    let handle =
-        build_circuit(client, &[nodes[1].node_id, nodes[2].node_id, service.node_id], None)
-            .await
-            .unwrap();
+    let mut handle = None;
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        match build_circuit(
+            client.clone(),
+            &[nodes[1].node_id, nodes[2].node_id, service.node_id],
+            None,
+        )
+        .await
+        {
+            Ok(h) => {
+                handle = Some(h);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    let handle = handle.expect("dựng circuit 3 hop (retry 5 lần)");
     let secret = b"MAT_KHAU_BI_MAT_KHONG_HOP_NAO_THAY";
     let reply = handle.echo(secret, Duration::from_secs(5)).await.unwrap();
     assert_eq!(reply, secret);

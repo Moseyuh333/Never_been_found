@@ -21,14 +21,21 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
     let stream = u16::from_le_bytes(cell.payload[5..7].try_into().unwrap());
     let onion = cell.payload[7..].to_vec();
 
-    let entry = node.circuits.lock().await.get(&cell.cid).map(|e| e.cloned_entry());
+    let entry = node
+        .circuits
+        .lock()
+        .await
+        .get(&cell.cid)
+        .map(|e| e.cloned_entry());
     let entry = match entry {
         Some(e) => e,
         None => return,
     };
     node.stats.lock().await.relayed += 1;
     match entry {
-        CircuitEntry::Origin { bwd, tag, streams, .. } => {
+        CircuitEntry::Origin {
+            bwd, tag, streams, ..
+        } => {
             // Origin nhận RELAY chỉ từ hop1. Chiều về: mở bwd[0]→bwd[1]→…→bwd[n-1].
             let mut data = onion;
             for k in &bwd {
@@ -41,7 +48,15 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
                 let _ = tx.send(data).await;
             }
         }
-        CircuitEntry::Relay { tag, k_fwd, k_bwd, prev, next, last_fwd, .. } => {
+        CircuitEntry::Relay {
+            tag,
+            k_fwd,
+            k_bwd,
+            prev,
+            next,
+            last_fwd,
+            ..
+        } => {
             let from_prev = from == prev.peer;
             let from_next = from == next.peer;
             if from_prev {
@@ -63,7 +78,12 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
                 payload.push(rcmd_u8);
                 payload.extend_from_slice(&stream.to_le_bytes());
                 payload.extend_from_slice(&inner);
-                let c = Cell { cid: next.cid, cmd: Cmd::Relay, flags: 0, payload };
+                let c = Cell {
+                    cid: next.cid,
+                    cmd: Cmd::Relay,
+                    flags: 0,
+                    payload,
+                };
                 let _ = node.link.send_cell(next.peer, &c).await;
             } else if from_next {
                 // Hướng về: bọc thêm 1 lớp k_bwd rồi gửi về prev.
@@ -73,12 +93,23 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
                 out.push(rcmd_u8);
                 out.extend_from_slice(&stream.to_le_bytes());
                 out.extend_from_slice(&payload);
-                let c = Cell { cid: prev.cid, cmd: Cmd::Relay, flags: 0, payload: out };
+                let c = Cell {
+                    cid: prev.cid,
+                    cmd: Cmd::Relay,
+                    flags: 0,
+                    payload: out,
+                };
                 let _ = node.link.send_cell(prev.peer, &c).await;
             }
             // Khác: datagram từ nơi không thuộc circuit → bỏ.
         }
-        CircuitEntry::Terminal { tag, k_fwd, k_bwd, prev, last_fwd } => {
+        CircuitEntry::Terminal {
+            tag,
+            k_fwd,
+            k_bwd,
+            prev,
+            last_fwd,
+        } => {
             // Terminal chỉ nhận từ prev (hướng tiến). DROP → bỏ (cover). ECHO/DATA → trả lời.
             if from != prev.peer || seq <= last_fwd {
                 return;
@@ -101,7 +132,12 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
                     payload.push(RCmd::Echo as u8);
                     payload.extend_from_slice(&stream.to_le_bytes());
                     payload.extend_from_slice(&out_payload);
-                    let c = Cell { cid: prev.cid, cmd: Cmd::Relay, flags: 0, payload };
+                    let c = Cell {
+                        cid: prev.cid,
+                        cmd: Cmd::Relay,
+                        flags: 0,
+                        payload,
+                    };
                     let _ = node.link.send_cell(prev.peer, &c).await;
                 }
                 RCmd::Data => {

@@ -102,7 +102,11 @@ pub struct Node {
 
 impl Node {
     pub async fn spawn(config: NodeConfig) -> Arc<Node> {
-        let mut rng = StdRng::seed_from_u64(config.rng_seed.unwrap_or(0x1234_5678));
+        // Seed None → entropy thật (mỗi node một identity); Some → deterministic (test).
+        let mut rng = match config.rng_seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_entropy(),
+        };
         let identity = NodeIdentity::random(&mut rng);
         let node_id = identity.node_id();
         let cell_addr: SocketAddr = format!("127.0.0.1:{}", config.cell_port).parse().unwrap();
@@ -112,7 +116,9 @@ impl Node {
                 .expect("bind DHT port"),
         );
 
-        let link = Link::bind(cell_addr, &identity.link_priv).await.expect("bind cell port");
+        let link = Link::bind(cell_addr, &identity.link_priv)
+            .await
+            .expect("bind cell port");
         let rx = link.subscribe().await.expect("subscribe 1 lần duy nhất");
 
         let node = Arc::new(Node {
@@ -219,16 +225,31 @@ impl Node {
                         tag,
                         k_fwd,
                         k_bwd,
-                        prev: HopLink { cid: cell.cid, peer: from },
+                        prev: HopLink {
+                            cid: cell.cid,
+                            peer: from,
+                        },
                         last_fwd: 0,
                     },
                 );
                 self.stats.lock().await.created += 1;
                 // Phản hồi CREATED về prev:
-                let c = Cell { cid: cell.cid, cmd: Cmd::Created, flags: 0, payload: vec![] };
+                let c = Cell {
+                    cid: cell.cid,
+                    cmd: Cmd::Created,
+                    flags: 0,
+                    payload: vec![],
+                };
                 let _ = self.link.send_cell(from, &c).await;
             }
-            ProcessOutcome::Relay { tag, k_fwd, k_bwd, next_id, next_addr, new_header } => {
+            ProcessOutcome::Relay {
+                tag,
+                k_fwd,
+                k_bwd,
+                next_id,
+                next_addr,
+                new_header,
+            } => {
                 let ncid = self.new_cid();
                 self.circuits.lock().await.insert(
                     cell.cid,
@@ -236,8 +257,14 @@ impl Node {
                         tag,
                         k_fwd,
                         k_bwd,
-                        prev: HopLink { cid: cell.cid, peer: from },
-                        next: HopLink { cid: ncid, peer: next_addr },
+                        prev: HopLink {
+                            cid: cell.cid,
+                            peer: from,
+                        },
+                        next: HopLink {
+                            cid: ncid,
+                            peer: next_addr,
+                        },
                         last_fwd: 0,
                     },
                 );
@@ -251,7 +278,12 @@ impl Node {
                 // Forward header đã mù hóa tới next:
                 let payload = new_header;
                 for frag in fragment(&payload) {
-                    let c = Cell { cid: ncid, cmd: Cmd::Create, flags: 0, payload: frag };
+                    let c = Cell {
+                        cid: ncid,
+                        cmd: Cmd::Create,
+                        flags: 0,
+                        payload: frag,
+                    };
                     let _ = self.link.send_cell(next_addr, &c).await;
                 }
             }
@@ -266,9 +298,19 @@ impl Node {
             return;
         }
         // Relay: chuyển CREATED về prev của circuit.
-        let entry = self.circuits.lock().await.get(&cell.cid).map(|e| e.cloned_entry());
+        let entry = self
+            .circuits
+            .lock()
+            .await
+            .get(&cell.cid)
+            .map(|e| e.cloned_entry());
         if let Some(CircuitEntry::Relay { prev, .. }) = entry {
-            let c = Cell { cid: prev.cid, cmd: Cmd::Created, flags: 0, payload: vec![] };
+            let c = Cell {
+                cid: prev.cid,
+                cmd: Cmd::Created,
+                flags: 0,
+                payload: vec![],
+            };
             let _ = self.link.send_cell(prev.peer, &c).await;
         }
     }
@@ -278,11 +320,21 @@ impl Node {
         let entry = self.circuits.lock().await.remove(&cell.cid);
         self.stats.lock().await.destroyed += 1;
         if let Some(CircuitEntry::Relay { prev, next, .. }) = entry {
-            let c = Cell { cid: prev.cid, cmd: Cmd::Destroy, flags: 0, payload: vec![] };
+            let c = Cell {
+                cid: prev.cid,
+                cmd: Cmd::Destroy,
+                flags: 0,
+                payload: vec![],
+            };
             let _ = self.link.send_cell(prev.peer, &c).await;
             let _ = next;
         } else if let Some(CircuitEntry::Terminal { prev, .. }) = entry {
-            let c = Cell { cid: prev.cid, cmd: Cmd::Destroy, flags: 0, payload: vec![] };
+            let c = Cell {
+                cid: prev.cid,
+                cmd: Cmd::Destroy,
+                flags: 0,
+                payload: vec![],
+            };
             let _ = self.link.send_cell(prev.peer, &c).await;
         }
     }
@@ -294,8 +346,7 @@ impl Node {
 
     /// Đăng ký stream nhận dữ liệu chiều về (origin side).
     pub async fn register_stream(&self, cid: u32, stream: u16, tx: mpsc::Sender<Vec<u8>>) {
-        if let Some(CircuitEntry::Origin { streams, .. }) =
-            self.circuits.lock().await.get_mut(&cid)
+        if let Some(CircuitEntry::Origin { streams, .. }) = self.circuits.lock().await.get_mut(&cid)
         {
             streams.insert(stream, tx);
         }
@@ -349,14 +400,27 @@ impl Clone for CircuitEntry {
     fn clone(&self) -> Self {
         // Circuits chứa mpsc Sender — Origin cần clone thủ công (Sender clone được).
         match self {
-            CircuitEntry::Origin { fwd, bwd, tag, next, streams } => CircuitEntry::Origin {
+            CircuitEntry::Origin {
+                fwd,
+                bwd,
+                tag,
+                next,
+                streams,
+            } => CircuitEntry::Origin {
                 fwd: fwd.clone(),
                 bwd: bwd.clone(),
                 tag: *tag,
                 next: *next,
                 streams: streams.clone(),
             },
-            CircuitEntry::Relay { tag, k_fwd, k_bwd, prev, next, last_fwd } => CircuitEntry::Relay {
+            CircuitEntry::Relay {
+                tag,
+                k_fwd,
+                k_bwd,
+                prev,
+                next,
+                last_fwd,
+            } => CircuitEntry::Relay {
                 tag: *tag,
                 k_fwd: *k_fwd,
                 k_bwd: *k_bwd,
@@ -364,7 +428,13 @@ impl Clone for CircuitEntry {
                 next: *next,
                 last_fwd: *last_fwd,
             },
-            CircuitEntry::Terminal { tag, k_fwd, k_bwd, prev, last_fwd } => CircuitEntry::Terminal {
+            CircuitEntry::Terminal {
+                tag,
+                k_fwd,
+                k_bwd,
+                prev,
+                last_fwd,
+            } => CircuitEntry::Terminal {
                 tag: *tag,
                 k_fwd: *k_fwd,
                 k_bwd: *k_bwd,

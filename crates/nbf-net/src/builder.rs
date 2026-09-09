@@ -44,9 +44,15 @@ pub async fn build_circuit(
 
     let cid = node.new_cid();
     // Gửi CREATE fragmented tới hop1:
-    node.ensure_peer_link(built.first_addr, descs[0].link_pub).await;
+    node.ensure_peer_link(built.first_addr, descs[0].link_pub)
+        .await;
     for frag in fragment(&built.header) {
-        let c = Cell { cid, cmd: Cmd::Create, flags: 0, payload: frag };
+        let c = Cell {
+            cid,
+            cmd: Cmd::Create,
+            flags: 0,
+            payload: frag,
+        };
         let _ = node.link.send_cell(built.first_addr, &c).await;
     }
     // Chờ CREATED:
@@ -68,11 +74,20 @@ pub async fn build_circuit(
             fwd: fwd.clone(),
             bwd: bwd.clone(),
             tag,
-            next: HopLink { cid, peer: built.first_addr },
+            next: HopLink {
+                cid,
+                peer: built.first_addr,
+            },
             streams: HashMap::new(),
         },
     );
-    Ok(CircuitHandle { node: node.clone(), cid, fwd, bwd, tag })
+    Ok(CircuitHandle {
+        node: node.clone(),
+        cid,
+        fwd,
+        bwd,
+        tag,
+    })
 }
 
 impl CircuitHandle {
@@ -108,8 +123,20 @@ impl CircuitHandle {
         payload.push(rcmd as u8);
         payload.extend_from_slice(&stream.to_le_bytes());
         payload.extend_from_slice(&onion);
-        let c = Cell { cid: self.cid, cmd: Cmd::Relay, flags: 0, payload };
-        let next = match self.node.circuits.lock().await.get(&self.cid).map(|e| e.cloned_entry()) {
+        let c = Cell {
+            cid: self.cid,
+            cmd: Cmd::Relay,
+            flags: 0,
+            payload,
+        };
+        let next = match self
+            .node
+            .circuits
+            .lock()
+            .await
+            .get(&self.cid)
+            .map(|e| e.cloned_entry())
+        {
             Some(CircuitEntry::Origin { next, .. }) => next,
             _ => return Err(NetError::NoSession),
         };
@@ -118,8 +145,20 @@ impl CircuitHandle {
     }
 
     pub async fn close(&self) -> Result<(), NetError> {
-        let c = Cell { cid: self.cid, cmd: Cmd::Destroy, flags: 0, payload: vec![] };
-        let next = match self.node.circuits.lock().await.get(&self.cid).map(|e| e.cloned_entry()) {
+        let c = Cell {
+            cid: self.cid,
+            cmd: Cmd::Destroy,
+            flags: 0,
+            payload: vec![],
+        };
+        let next = match self
+            .node
+            .circuits
+            .lock()
+            .await
+            .get(&self.cid)
+            .map(|e| e.cloned_entry())
+        {
             Some(CircuitEntry::Origin { next, .. }) => next,
             _ => return Ok(()),
         };
@@ -141,5 +180,11 @@ pub async fn pick_origin(node: &Arc<Node>) -> Option<CircuitHandle> {
         })
     }?;
     let (cid, fwd, bwd, tag) = found;
-    Some(CircuitHandle { node: node.clone(), cid, fwd, bwd, tag })
+    Some(CircuitHandle {
+        node: node.clone(),
+        cid,
+        fwd,
+        bwd,
+        tag,
+    })
 }

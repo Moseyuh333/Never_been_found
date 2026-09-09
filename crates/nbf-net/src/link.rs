@@ -163,7 +163,7 @@ impl Link {
                 .get(&addr)
                 .ok_or(NetError::NoSession)?;
             let mut infl = self.hs_inflight.lock().await;
-            if !infl.contains_key(&addr) {
+            if let std::collections::hash_map::Entry::Vacant(e) = infl.entry(addr) {
                 let params: snow::params::NoiseParams =
                     PATTERN.parse().map_err(|e| noise_err(&e))?;
                 let mut st = snow::Builder::new(params)
@@ -174,7 +174,7 @@ impl Link {
                 let mut out = vec![0u8; 512];
                 let n = st.write_message(&[], &mut out).map_err(|e| noise_err(&e))?;
                 self.send_hs_fragmented(addr, &out[..n]).await?;
-                infl.insert(addr, st);
+                e.insert(st);
             }
             drop(infl);
             // Chờ responder hoàn tất (msg2 về → session xuất hiện):

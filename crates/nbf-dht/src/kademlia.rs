@@ -73,7 +73,9 @@ impl Kademlia {
         };
         match msg {
             RpcMsg::Ping { nonce } => {
-                let _ = self.send_raw(from, &rpc_encode(&ping_response(nonce))).await;
+                let _ = self
+                    .send_raw(from, &rpc_encode(&ping_response(nonce)))
+                    .await;
             }
             RpcMsg::Store { desc } => {
                 self.store.write().await.insert(desc.node_id, desc.clone());
@@ -159,7 +161,14 @@ impl Kademlia {
             let nonce = rand::random::<u64>();
             let _ = self.send_rpc(*s, RpcMsg::Ping { nonce }, 1000).await;
             if let Ok(RpcMsg::Found { contacts, .. }) = self
-                .send_rpc(*s, RpcMsg::Find { key: self.id, want_value: false }, 1000)
+                .send_rpc(
+                    *s,
+                    RpcMsg::Find {
+                        key: self.id,
+                        want_value: false,
+                    },
+                    1000,
+                )
                 .await
             {
                 self.try_merge(&contacts).await;
@@ -171,7 +180,13 @@ impl Kademlia {
     pub async fn store_self(&self, seeds: &[SocketAddr]) -> Result<(), DhtError> {
         for s in seeds {
             let _ = self
-                .send_rpc(*s, RpcMsg::Store { desc: self.own_desc.clone() }, 1000)
+                .send_rpc(
+                    *s,
+                    RpcMsg::Store {
+                        desc: self.own_desc.clone(),
+                    },
+                    1000,
+                )
                 .await;
         }
         Ok(())
@@ -189,8 +204,7 @@ impl Kademlia {
             let batch = closest_seen
                 .iter()
                 .filter(|c| !queried.contains(&c.node_id))
-                .cloned()
-                .take(ALPHA)
+                .take(ALPHA).cloned()
                 .collect::<Vec<_>>();
             if batch.is_empty() {
                 break;

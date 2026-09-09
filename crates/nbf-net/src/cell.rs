@@ -241,7 +241,12 @@ mod tests {
 
     #[test]
     fn cell_encode_decode_dung_1280() {
-        let c = Cell { cid: 7, cmd: Cmd::Relay, flags: 0, payload: vec![1; 100] };
+        let c = Cell {
+            cid: 7,
+            cmd: Cmd::Relay,
+            flags: 0,
+            payload: vec![1; 100],
+        };
         let b = c.encode();
         assert_eq!(b.len(), CELL);
         let d = Cell::decode(&b).unwrap();
@@ -253,7 +258,12 @@ mod tests {
     #[test]
     fn cell_sai_do_dai_bi_tu_choi() {
         assert!(Cell::decode(&[0u8; 100]).is_err());
-        let c = Cell { cid: 1, cmd: Cmd::Create, flags: 0, payload: vec![0; CELL_DATA] };
+        let c = Cell {
+            cid: 1,
+            cmd: Cmd::Create,
+            flags: 0,
+            payload: vec![0; CELL_DATA],
+        };
         assert!(c.encode().len() == CELL);
     }
 

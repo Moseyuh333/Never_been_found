@@ -18,11 +18,18 @@ impl Contact {
             std::net::IpAddr::V4(ip) => ip.octets(),
             _ => [127, 0, 0, 1],
         };
-        Contact { node_id: d.node_id, ip, dht_port: d.dht_port }
+        Contact {
+            node_id: d.node_id,
+            ip,
+            dht_port: d.dht_port,
+        }
     }
 
     pub fn addr(&self) -> SocketAddr {
-        SocketAddr::new(Ipv4Addr::new(self.ip[0], self.ip[1], self.ip[2], self.ip[3]).into(), self.dht_port)
+        SocketAddr::new(
+            Ipv4Addr::new(self.ip[0], self.ip[1], self.ip[2], self.ip[3]).into(),
+            self.dht_port,
+        )
     }
 }
 
@@ -51,11 +58,23 @@ impl TryFrom<u8> for RpcType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RpcMsg {
-    Ping { nonce: u64 },
-    Pong { nonce: u64 },
-    Store { desc: Descriptor },
-    Find { key: NodeId, want_value: bool },
-    Found { contacts: Vec<Contact>, value: Option<Descriptor> },
+    Ping {
+        nonce: u64,
+    },
+    Pong {
+        nonce: u64,
+    },
+    Store {
+        desc: Descriptor,
+    },
+    Find {
+        key: NodeId,
+        want_value: bool,
+    },
+    Found {
+        contacts: Vec<Contact>,
+        value: Option<Descriptor>,
+    },
 }
 
 const MAGIC: [u8; 4] = *b"NBFR";
@@ -122,15 +141,22 @@ pub fn rpc_decode(data: &[u8]) -> Result<RpcMsg, DhtError> {
             if body.len() != 8 {
                 return Err(DhtError::BadLen(body.len()));
             }
-            Ok(RpcMsg::Ping { nonce: u64::from_le_bytes(body.try_into().unwrap()) })
+            Ok(RpcMsg::Ping {
+                nonce: u64::from_le_bytes(body.try_into().unwrap()),
+            })
         }
         RpcType::Pong => {
             if body.len() != 8 {
                 return Err(DhtError::BadLen(body.len()));
             }
-            Ok(RpcMsg::Pong { nonce: u64::from_le_bytes(body.try_into().unwrap()) })
+            Ok(RpcMsg::Pong {
+                nonce: u64::from_le_bytes(body.try_into().unwrap()),
+            })
         }
-        RpcType::Store => Ok(RpcMsg::Store { desc: Descriptor::from_signed_bytes(body).map_err(|e| DhtError::BadDesc(e.to_string()))? }),
+        RpcType::Store => Ok(RpcMsg::Store {
+            desc: Descriptor::from_signed_bytes(body)
+                .map_err(|e| DhtError::BadDesc(e.to_string()))?,
+        }),
         RpcType::Find => {
             if body.len() < 21 {
                 return Err(DhtError::BadLen(body.len()));
@@ -153,7 +179,11 @@ pub fn rpc_decode(data: &[u8]) -> Result<RpcMsg, DhtError> {
                 let node_id: NodeId = body[o..o + 20].try_into().unwrap();
                 let ip: [u8; 4] = body[o + 20..o + 24].try_into().unwrap();
                 let dht_port = u16::from_le_bytes([body[o + 24], body[o + 25]]);
-                contacts.push(Contact { node_id, ip, dht_port });
+                contacts.push(Contact {
+                    node_id,
+                    ip,
+                    dht_port,
+                });
                 o += 26;
             }
             if o >= body.len() {
@@ -165,7 +195,10 @@ pub fn rpc_decode(data: &[u8]) -> Result<RpcMsg, DhtError> {
                 if body.len() < o + 1385 {
                     return Err(DhtError::BadLen(body.len()));
                 }
-                Some(Descriptor::from_signed_bytes(&body[o..o + 1385]).map_err(|e| DhtError::BadDesc(e.to_string()))?)
+                Some(
+                    Descriptor::from_signed_bytes(&body[o..o + 1385])
+                        .map_err(|e| DhtError::BadDesc(e.to_string()))?,
+                )
             } else {
                 None
             };

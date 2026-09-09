@@ -4,7 +4,7 @@
 
 use crate::cell::Cell;
 use crate::node::{CircuitEntry, Node};
-use crate::{Cmd, RCmd};
+use crate::Cmd;
 use rand::Rng;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -25,7 +25,12 @@ pub async fn run_loop(node: Arc<Node>) {
         // (1) PADDING tới 1 peer ngẫu nhiên đã biết:
         if let Some((peer, link_pub)) = pick_peer(&node).await {
             node.ensure_peer_link(peer, link_pub).await;
-            let c = Cell { cid: 0, cmd: Cmd::Padding, flags: 0, payload: vec![] };
+            let c = Cell {
+                cid: 0,
+                cmd: Cmd::Padding,
+                flags: 0,
+                payload: vec![],
+            };
             if node.link.send_cell(peer, &c).await.is_ok() {
                 node.stats.lock().await.padding_sent += 1;
             }

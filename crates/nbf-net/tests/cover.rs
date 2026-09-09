@@ -1,15 +1,23 @@
 //! Cover traffic: PADDING link + RELAY DROP circuit — không đổi hành vi echo.
 
-use std::time::Duration;
-use nbf_net::node::{stats_of, CoverCfg, Node, NodeConfig};
 use nbf_net::build_circuit;
+use nbf_net::node::{stats_of, CoverCfg, Node, NodeConfig};
+use std::time::Duration;
 
 fn cfg(base: u16, i: u16, on: bool) -> NodeConfig {
     NodeConfig {
         cell_port: base + i * 2,
         dht_port: base + i * 2 + 1,
-        seeds: if i == 0 { vec![] } else { vec![format!("127.0.0.1:{}", base + 1)] },
-        cover: CoverCfg { on, min_interval_ms: 200, max_interval_ms: 400 },
+        seeds: if i == 0 {
+            vec![]
+        } else {
+            vec![format!("127.0.0.1:{}", base + 1)]
+        },
+        cover: CoverCfg {
+            on,
+            min_interval_ms: 200,
+            max_interval_ms: 400,
+        },
         rng_seed: Some(0xABC + i as u64),
     }
 }
@@ -58,7 +66,10 @@ async fn drop_khong_lam_hong_echo() {
     for _ in 0..3 {
         handle.send_data(b"garbage-drop", 99).await.unwrap();
     }
-    let reply = handle.echo(b"van con song", Duration::from_secs(5)).await.unwrap();
+    let reply = handle
+        .echo(b"van con song", Duration::from_secs(5))
+        .await
+        .unwrap();
     assert_eq!(reply, b"van con song");
     handle.close().await;
     drop(nodes);
