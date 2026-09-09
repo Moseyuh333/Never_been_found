@@ -15,6 +15,7 @@ pub use identity::{
 };
 pub use kdf::{derive_hdr_key, derive_traffic_keys, hdr_nonce, open, relay_nonce, seal};
 pub use kem::{kem_decap, kem_encap};
+pub use sphinx::{build_header, process_header, BuiltHeader, ProcessOutcome};
 
 /// ID node 160-bit: SHA-256(Ed25519 pub) cắt 20 byte đầu.
 pub type NodeId = [u8; 20];

@@ -3,4 +3,5 @@
 
 pub mod kademlia;
 pub mod rpc;
+pub use kademlia::*;
 pub use rpc::*;

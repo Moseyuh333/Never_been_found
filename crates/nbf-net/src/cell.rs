@@ -55,6 +55,16 @@ impl TryFrom<u8> for RCmd {
     }
 }
 
+/// Parse 1 mảnh CREATE: [total u16][idx u16][chunk] → (total, idx, chunk).
+pub fn parse_frag(payload: &[u8]) -> Result<(u16, u16, &[u8]), NetError> {
+    if payload.len() < 4 {
+        return Err(NetError::TooShort);
+    }
+    let total = u16::from_le_bytes([payload[0], payload[1]]);
+    let idx = u16::from_le_bytes([payload[2], payload[3]]);
+    Ok((total, idx, &payload[4..]))
+}
+
 #[derive(Debug, Clone)]
 pub struct Cell {
     pub cid: u32,
@@ -180,6 +190,21 @@ pub fn open_onion(
     onion: &[u8],
 ) -> Result<Vec<u8>, NetError> {
     nbf_crypto::open(key, &nbf_crypto::relay_nonce(tag, 0, seq - hop_idx), onion).map_err(NetError::from)
+}
+
+/// Bọc 1 lớp backward (terminal/hop trả lời origin).
+pub fn seal_bwd(key: &[u8; 32], tag: &[u8; 16], seq: u32, msg: &[u8]) -> Vec<u8> {
+    nbf_crypto::seal(key, &nbf_crypto::relay_nonce(tag, 1, seq), msg)
+}
+
+/// Mở 1 lớp backward (origin mở từng lớp khi nhận reply).
+pub fn open_bwd(
+    key: &[u8; 32],
+    tag: &[u8; 16],
+    seq: u32,
+    onion: &[u8],
+) -> Result<Vec<u8>, NetError> {
+    nbf_crypto::open(key, &nbf_crypto::relay_nonce(tag, 1, seq), onion).map_err(NetError::from)
 }
 
 /// Bọc onion backward (terminal → origin): mỗi hop thêm 1 lớp, seq tăng dần.
