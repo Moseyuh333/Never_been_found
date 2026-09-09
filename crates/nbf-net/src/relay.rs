@@ -49,7 +49,7 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
                 if seq <= last_fwd {
                     return; // replay
                 }
-                let inner = match open_onion(&k_fwd, &tag, 0, seq, &onion) {
+                let inner = match open_onion(&k_fwd, &tag, seq, &onion) {
                     Ok(v) => v,
                     Err(_) => return,
                 };
@@ -83,7 +83,7 @@ pub async fn handle(node: Arc<Node>, from: SocketAddr, cell: Cell) {
             if from != prev.peer || seq <= last_fwd {
                 return;
             }
-            let inner = match open_onion(&k_fwd, &tag, 0, seq, &onion) {
+            let inner = match open_onion(&k_fwd, &tag, seq, &onion) {
                 Ok(v) => v,
                 Err(_) => return,
             };
@@ -136,12 +136,12 @@ mod tests {
 
         // Origin bọc:
         let onion = seal_onion(&fwd, &tag, seq, b"ping");
-        // Hop b mở lớp 1 (hop_idx 0):
-        let l1 = open_onion(&fwd[0], &tag, 0, seq, &onion).unwrap();
-        // Hop c mở lớp 2 (hop_idx 1):
-        let l2 = open_onion(&fwd[1], &tag, 1, seq, &l1).unwrap();
-        // Terminal mở lớp 3 (hop_idx 2) → plaintext:
-        let l3 = open_onion(&fwd[2], &tag, 2, seq, &l2).unwrap();
+        // Hop b mở lớp 1:
+        let l1 = open_onion(&fwd[0], &tag, seq, &onion).unwrap();
+        // Hop c mở lớp 2:
+        let l2 = open_onion(&fwd[1], &tag, seq, &l1).unwrap();
+        // Terminal mở lớp 3 → plaintext:
+        let l3 = open_onion(&fwd[2], &tag, seq, &l2).unwrap();
         assert_eq!(l3, b"ping");
 
         // Terminal trả lời: terminal bọc bwd[2], hop1 bọc thêm bwd[1], hop0 bọc bwd[0]; origin mở [0]→[1]→[2].

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 
 pub const K: usize = 3;
@@ -21,6 +21,8 @@ pub struct Kademlia {
     pub store: RwLock<HashMap<NodeId, Descriptor>>,
     socket: Arc<UdpSocket>,
     pub local_addr: SocketAddr,
+    /// oneshot chờ reply theo addr — run() route Found/Pong về đây (tránh race recv).
+    pending: Mutex<HashMap<SocketAddr, tokio::sync::oneshot::Sender<RpcMsg>>>,
 }
 
 impl Kademlia {
@@ -36,6 +38,7 @@ impl Kademlia {
             socket,
             local_addr,
             own_desc,
+            pending: Mutex::new(HashMap::new()),
         })
     }
 
@@ -45,6 +48,16 @@ impl Kademlia {
             match self.socket.recv_from(&mut buf).await {
                 Ok((n, from)) => {
                     let data = buf[..n].to_vec();
+                    // Reply Found/Pong cho request của mình → route vào pending:
+                    if let Ok(m) = rpc_decode(&data) {
+                        if matches!(m, RpcMsg::Found { .. } | RpcMsg::Pong { .. }) {
+                            let tx = self.pending.lock().await.remove(&from);
+                            if let Some(tx) = tx {
+                                let _ = tx.send(m);
+                                continue;
+                            }
+                        }
+                    }
                     let me = self.clone();
                     tokio::spawn(async move { me.handle(from, data).await });
                 }
@@ -101,13 +114,16 @@ impl Kademlia {
         timeout_ms: u64,
     ) -> Result<RpcMsg, DhtError> {
         let data = rpc_encode(&msg);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(addr, tx);
         self.socket.send_to(&data, addr).await?;
-        let mut buf = vec![0u8; 4096];
-        let fut = self.socket.recv_from(&mut buf);
-        match timeout(Duration::from_millis(timeout_ms), fut).await {
-            Ok(Ok((n, _from))) => rpc_decode(&buf[..n]),
-            Ok(Err(e)) => Err(DhtError::Io(e)),
-            Err(_) => Err(DhtError::BadLen(0)), // timeout
+        match timeout(Duration::from_millis(timeout_ms), rx).await {
+            Ok(Ok(m)) => Ok(m),
+            Ok(Err(_)) => Err(DhtError::BadType(0xFF)),
+            Err(_) => {
+                self.pending.lock().await.remove(&addr);
+                Err(DhtError::BadLen(0)) // timeout
+            }
         }
     }
 

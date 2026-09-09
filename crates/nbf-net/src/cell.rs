@@ -170,26 +170,24 @@ pub fn reassemble(
 }
 
 /// Bọc onion forward từ hop CUỐI vào (lớp ngoài cùng = hop đầu).
-/// `keys` theo thứ tự route; `seq` = n_field của hop đầu (giảm dần mỗi lớp).
+/// `keys` theo thứ tự route. Nonce không phụ thuộc vị trí hop: mỗi hop có KHÓA riêng
+/// (ss_khác) nên cặp (key, nonce) vẫn duy nhất — đúng như chiều backward.
 pub fn seal_onion(keys: &[[u8; 32]], tag: &[u8; 16], seq: u32, msg: &[u8]) -> Vec<u8> {
-    let n = keys.len();
     let mut payload = msg.to_vec();
-    for i in (0..n).rev() {
-        payload = nbf_crypto::seal(&keys[i], &nbf_crypto::relay_nonce(tag, 0, seq - i as u32), &payload);
+    for k in keys.iter().rev() {
+        payload = nbf_crypto::seal(k, &nbf_crypto::relay_nonce(tag, 0, seq), &payload);
     }
     payload
 }
 
 /// Mở ONE lớp onion ở một hop (chiều forward).
-/// `hop_idx` = vị trí hop (0 = đầu tiên) — nonce phải khớp seal ở lớp tương ứng.
 pub fn open_onion(
     key: &[u8; 32],
     tag: &[u8; 16],
-    hop_idx: u32,
     seq: u32,
     onion: &[u8],
 ) -> Result<Vec<u8>, NetError> {
-    nbf_crypto::open(key, &nbf_crypto::relay_nonce(tag, 0, seq - hop_idx), onion).map_err(NetError::from)
+    nbf_crypto::open(key, &nbf_crypto::relay_nonce(tag, 0, seq), onion).map_err(NetError::from)
 }
 
 /// Bọc 1 lớp backward (terminal/hop trả lời origin).
@@ -207,27 +205,25 @@ pub fn open_bwd(
     nbf_crypto::open(key, &nbf_crypto::relay_nonce(tag, 1, seq), onion).map_err(NetError::from)
 }
 
-/// Bọc onion backward (terminal → origin): mỗi hop thêm 1 lớp, seq tăng dần.
+/// Bọc onion backward (terminal → origin): mỗi hop 1 lớp, cùng nonce (key riêng mỗi hop).
 pub fn seal_onion_bwd(keys: &[[u8; 32]], tag: &[u8; 16], seq: u32, msg: &[u8]) -> Vec<u8> {
     let mut payload = msg.to_vec();
-    for (i, k) in keys.iter().enumerate() {
-        payload = nbf_crypto::seal(k, &nbf_crypto::relay_nonce(tag, 1, seq + i as u32), &payload);
+    for k in keys.iter().rev() {
+        payload = nbf_crypto::seal(k, &nbf_crypto::relay_nonce(tag, 1, seq), &payload);
     }
     payload
 }
 
-/// Mở onion backward ở origin (lớp ngoài cùng = hop cuối, mở ngược thứ tự seal).
+/// Mở onion backward ở origin (lớp ngoài cùng = hop đầu, mở đúng thứ tự keys).
 pub fn open_onion_bwd(
     keys: &[[u8; 32]],
     tag: &[u8; 16],
     seq: u32,
     onion: &[u8],
 ) -> Result<Vec<u8>, NetError> {
-    let n = keys.len();
     let mut payload = onion.to_vec();
-    // seal bọc keys[0] trước (nonce seq+0) → nó ở SÂU NHẤT; mở ngược từ keys[n-1]:
-    for (i, k) in keys.iter().enumerate().rev() {
-        payload = nbf_crypto::open(k, &nbf_crypto::relay_nonce(tag, 1, seq + i as u32), &payload)?;
+    for k in keys {
+        payload = nbf_crypto::open(k, &nbf_crypto::relay_nonce(tag, 1, seq), &payload)?;
     }
     Ok(payload)
 }
@@ -293,18 +289,18 @@ mod tests {
         let seq = 3u32;
         let inner = b"echo-hello";
         let onion = seal_onion(&keys, &tag, seq, inner);
-        // Mỗi hop peel với hop_idx tăng dần (nonce = seq - hop_idx):
-        let l2 = open_onion(&keys[0], &tag, 0, seq, &onion).unwrap();
-        let l1 = open_onion(&keys[1], &tag, 1, seq, &l2).unwrap();
-        let l0 = open_onion(&keys[2], &tag, 2, seq, &l1).unwrap();
+        // Mỗi hop peel với key của mình (nonce = seq):
+        let l2 = open_onion(&keys[0], &tag, seq, &onion).unwrap();
+        let l1 = open_onion(&keys[1], &tag, seq, &l2).unwrap();
+        let l0 = open_onion(&keys[2], &tag, seq, &l1).unwrap();
         assert_eq!(l0, inner);
         // sai key → fail:
         let mut bad = keys.clone();
         bad[1] = [7u8; 32];
-        assert!(open_onion(&bad[1], &tag, 1, seq, &onion).is_err());
+        assert!(open_onion(&bad[1], &tag, seq, &onion).is_err());
         // backward — open phải dùng CÙNG seq với seal:
-        let b = seal_onion_bwd(&keys, &tag, 1, inner);
-        let out = open_onion_bwd(&keys, &tag, 1, &b).unwrap();
+        let b = seal_onion_bwd(&keys, &tag, seq, inner);
+        let out = open_onion_bwd(&keys, &tag, seq, &b).unwrap();
         assert_eq!(out, inner);
     }
 

@@ -113,7 +113,7 @@ impl Node {
         );
 
         let link = Link::bind(cell_addr, &identity.link_priv).await.expect("bind cell port");
-        let rx = link.subscribe().expect("subscribe 1 lần duy nhất");
+        let rx = link.subscribe().await.expect("subscribe 1 lần duy nhất");
 
         let node = Arc::new(Node {
             config,
@@ -126,7 +126,7 @@ impl Node {
             pending: Mutex::new(HashMap::new()),
             routing: Mutex::new(HashMap::new()),
             next_cid: AtomicU32::new(1),
-            seq_origin: AtomicU32::new(1),
+            seq_origin: AtomicU32::new(64), // > MAX_HOPS để seal_onion (seq - i) không underflow
             stats: Mutex::new(Stats::default()),
             dht_cache: Mutex::new(HashMap::new()),
             create_frags: Mutex::new(HashMap::new()),
@@ -144,6 +144,10 @@ impl Node {
             .filter_map(|s| s.parse().ok())
             .collect();
         let dht = node.dht.clone();
+        let dht_run = dht.clone();
+        tokio::spawn(async move {
+            dht_run.run().await; // vòng nhận RPC DHT (Ping/Store/Find)
+        });
         tokio::spawn(async move {
             dht.bootstrap(&seeds).await;
             dht.store_self(&seeds).await;
@@ -160,7 +164,6 @@ impl Node {
                             let n2 = n.clone();
                             tokio::spawn(async move { n2.handle_cell(from, cell).await });
                         }
-                        WireMsg::Handshake(..) => {}
                     }
                 }
             }
@@ -225,7 +228,7 @@ impl Node {
                 let c = Cell { cid: cell.cid, cmd: Cmd::Created, flags: 0, payload: vec![] };
                 let _ = self.link.send_cell(from, &c).await;
             }
-            ProcessOutcome::Relay { tag, k_fwd, k_bwd, next_addr, new_header, .. } => {
+            ProcessOutcome::Relay { tag, k_fwd, k_bwd, next_id, next_addr, new_header } => {
                 let ncid = self.new_cid();
                 self.circuits.lock().await.insert(
                     cell.cid,
@@ -239,6 +242,12 @@ impl Node {
                     },
                 );
                 self.stats.lock().await.created += 1;
+                // Cần static key của next hop để mở session Noise:
+                let link_pub = match self.lookup_route(next_id).await {
+                    Ok(d) => d.link_pub,
+                    Err(_) => [0u8; 32], // fallback: kênh rõ MVP vẫn chạy được
+                };
+                self.ensure_peer_link(next_addr, link_pub).await;
                 // Forward header đã mù hóa tới next:
                 let payload = new_header;
                 for frag in fragment(&payload) {
@@ -378,4 +387,9 @@ pub fn now_unix() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Snapshot stats của node (helper cho test/CLI).
+pub async fn stats_of(node: &Arc<Node>) -> Stats {
+    node.stats.lock().await.clone()
 }

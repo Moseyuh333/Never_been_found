@@ -1,19 +1,15 @@
-//! Link Noise-IK UDP với handshake offload.
+//! Link Noise-IK UDP: handshake tự động, session 1-RTT per-peer.
 //!
-//! Vì bản mã Noise-IK_25519_ChaChaPoly_SHA256 ≈ 1296B > MTU 1200B, handshake KHÔNG gửi
-//! qua datagram cell 1280B mà qua kênh HS riêng, fragmented:
-//!   datagram HS = [0x7F][total u16][idx u16][chunk ...]
-//! Khuôn HS FragmentedPlain (bản rõ khi đã thiết lập kênh HS):
-//!   [Total u16][Idx u16][Chunk 1200B] (mảnh) — tổng hợp lại ở responder.
-//! Sau khi HS xong, cả hai chiều đều có Session; send_cell có thể gửi cell NGAY
-//! qua kênh HS (bọc trong 1 datagram HS lớn) hoặc qua session Noise 1-RTT.
+//! Datagram: `[0x7F][total u16][idx u16][chunk...]` = mảnh HS (IK msg ngắn ~96B nên
+//! thường 1 mảnh); datagram còn lại là ciphertext session Noise — nếu chưa có session
+//! thì coi là cell rõ (fallback MVP, kênh localhost/LAN tin cậy).
 //!
-//! `Link` là bộ phát/tuần tự hóa; `spawn_recv_task` là luồng nhận duy nhất đẩy
-//! `(addr, WireMsg)` vào `mpsc::Receiver` mà Node sở hữu.
+//! `send_cell` tự khởi HS khi chưa có session (cần `set_peer_static_async` trước),
+//! chờ session sẵn (2s) rồi gửi mã hóa. Bên responder hoàn thành HS ngay sau msg1.
 
 use crate::cell::{Cell, CELL};
 use crate::NetError;
-use nbf_crypto::{x25519_pub_from_clamped, CryptoError};
+use nbf_crypto::CryptoError;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,71 +17,61 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
 
 pub const HS_MTU: usize = 1200;
-/// Số byte tối đa một datagram HS (rộng hơn cell để chứa cả Noise ciphertext).
+/// Datagram HS tối đa (reassembly buffer).
 pub const HS_DGRAM: usize = 2048;
+/// Khuôn Noise: IK (1-RTT, static key đã biết trước).
+const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
 
-/// Định danh loại datagram HS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandshakeKind {
-    Initiator = 1,
-    Responder = 2,
-}
-
-impl HandshakeKind {
-    pub fn from_u8(v: u8) -> Option<HandshakeKind> {
-        match v {
-            1 => Some(HandshakeKind::Initiator),
-            2 => Some(HandshakeKind::Responder),
-            _ => None,
-        }
-    }
-}
-
-/// Session Noise per-peer (transport 1-RTT).
+/// Session Noise per-peer (transport 1-RTT, hai chiều nonce riêng).
 pub struct Session {
-    transport: snow::TransportState,
+    pub transport: snow::TransportState,
 }
 
-/// Link socket UDP — sở hữu socket, quản lý session, nhận task nền.
-pub struct Link {
-    socket: Arc<UdpSocket>,
-    sessions: Arc<Mutex<HashMap<SocketAddr, Session>>>,
-    /// static key cục bộ (cho Noise).
-    local_static: [u8; 32],
-    /// khóa công khai đối tác đã biết trước (để verify).
-    peer_statics: Mutex<HashMap<SocketAddr, [u8; 32]>>,
-    /// kênh ra cho Node: `(addr, WireMsg)`.
-    tx: mpsc::Sender<(SocketAddr, WireMsg)>,
-    /// Receiver duy nhất — subscribe() lấy 1 lần.
-    rx: Mutex<Option<mpsc::Receiver<(SocketAddr, WireMsg)>>>,
-    /// task nền nhận datagram.
-    recv_task: tokio::task::JoinHandle<()>,
-}
-
-/// Thông điệp ra cho Node: hoặc một cell đã decode, hoặc 1 chunk HS.
+/// Datagrams nhận được từ socket (chỉ cell — HS xử lý nội bộ trong link).
 #[derive(Debug, Clone)]
 pub enum WireMsg {
     Cell(Cell),
-    /// chunk HS: (data, total, idx).
-    Handshake(Vec<u8>, u16, u16),
+}
+
+/// Link socket UDP — sở hữu socket, tự quản HS/session, đẩy cell lên Node.
+pub struct Link {
+    socket: Arc<UdpSocket>,
+    sessions: Arc<Mutex<HashMap<SocketAddr, Session>>>,
+    /// static key cục bộ (private, cho Noise).
+    local_static: [u8; 32],
+    peer_statics: Arc<Mutex<HashMap<SocketAddr, [u8; 32]>>>,
+    hs_inflight: Arc<Mutex<HashMap<SocketAddr, snow::HandshakeState>>>,
+    tx: mpsc::Sender<(SocketAddr, WireMsg)>,
+    rx: Mutex<Option<mpsc::Receiver<(SocketAddr, WireMsg)>>>,
+    recv_task: tokio::task::JoinHandle<()>,
 }
 
 impl Link {
-    /// Bind socket tại addr; `local_static` là private key 32B (đã clamp).
+    /// Bind UDP socket và khởi recv task.
     pub async fn bind(addr: SocketAddr, local_static: &[u8; 32]) -> Result<Link, NetError> {
         let socket = Arc::new(
-            tokio::net::UdpSocket::bind(addr)
+            UdpSocket::bind(addr)
                 .await
                 .map_err(|e| NetError::Io(format!("bind {addr}: {e}")))?,
         );
         let (tx, rx) = mpsc::channel::<(SocketAddr, WireMsg)>(256);
+        let sessions: Arc<Mutex<HashMap<SocketAddr, Session>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let peer_statics: Arc<Mutex<HashMap<SocketAddr, [u8; 32]>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let hs_inflight: Arc<Mutex<HashMap<SocketAddr, snow::HandshakeState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let local = *local_static;
         let s = socket.clone();
         let tx2 = tx.clone();
-        let sessions: Arc<Mutex<HashMap<SocketAddr, Session>>> = Arc::new(Mutex::new(HashMap::new()));
-        let sessions2 = sessions.clone();
-        // task nền: nhận datagram, phân loại HS/cell, đẩy vào kênh:
+        let sess2 = sessions.clone();
+        let ps2 = peer_statics.clone();
+        let infl2 = hs_inflight.clone();
+        // Task nền duy nhất: nhận datagram, phân loại HS/cipher/cell:
         let recv_task = tokio::spawn(async move {
             let mut buf = vec![0u8; HS_DGRAM];
+            // Gom mảnh HS theo src: (total, idx→chunk):
+            let mut hs_buf: HashMap<SocketAddr, (u16, HashMap<u16, Vec<u8>>)> = HashMap::new();
             loop {
                 let (n, src) = match s.recv_from(&mut buf).await {
                     Ok(x) => x,
@@ -95,20 +81,42 @@ impl Link {
                 if data.is_empty() {
                     continue;
                 }
-                if data[0] == 0x7F {
-                    // handshake fragment: [0x7F][total u16][idx u16][chunk]
-                    if data.len() < 5 {
-                        continue;
-                    }
+                if data[0] == 0x7F && data.len() >= 5 {
+                    // Mảnh HS: reassembly per-src rồi hoàn tất handshake:
                     let total = u16::from_le_bytes([data[1], data[2]]);
                     let idx = u16::from_le_bytes([data[3], data[4]]);
-                    let chunk = data[5..].to_vec();
-                    if tx2.send((src, WireMsg::Handshake(chunk, total, idx))).await.is_err() {
-                        break;
+                    let e = hs_buf.entry(src).or_insert((total, HashMap::new()));
+                    e.1.insert(idx, data[5..].to_vec());
+                    if e.1.len() == e.0 as usize {
+                        let (_, parts) = hs_buf.remove(&src).unwrap();
+                        let mut msg = Vec::new();
+                        for i in 0..total {
+                            if let Some(c) = parts.get(&i) {
+                                msg.extend_from_slice(c);
+                            }
+                        }
+                        handle_hs(&sess2, &infl2, &ps2, local, &s, src, &msg).await;
                     }
-                } else if let Ok(cell) = Cell::decode(data) {
-                    if tx2.send((src, WireMsg::Cell(cell))).await.is_err() {
-                        break;
+                } else {
+                    // Cell: decrypt qua session nếu có, ngược lại coi là cell rõ (MVP).
+                    let plain = {
+                        let mut sess = sess2.lock().await;
+                        match sess.get_mut(&src) {
+                            Some(ss) => {
+                                let mut out = vec![0u8; HS_DGRAM];
+                                match ss.transport.read_message(data, &mut out) {
+                                    Ok(n) => Some(out[..n].to_vec()),
+                                    Err(_) => None,
+                                }
+                            }
+                            None => None,
+                        }
+                    };
+                    let plain = plain.unwrap_or_else(|| data.to_vec());
+                    if let Ok(cell) = Cell::decode(&plain) {
+                        if tx2.send((src, WireMsg::Cell(cell))).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -116,22 +124,23 @@ impl Link {
         Ok(Link {
             socket,
             sessions,
-            local_static: *local_static,
-            peer_statics: Mutex::new(HashMap::new()),
+            local_static: local,
+            peer_statics,
+            hs_inflight,
             tx,
             rx: Mutex::new(Some(rx)),
             recv_task,
         })
     }
 
-    /// Đăng ký khóa công khai tĩnh của peer (để verify HS).
-    pub fn set_peer_static(&self, addr: SocketAddr, pub_key: [u8; 32]) {
-        self.peer_statics.blocking_lock().insert(addr, pub_key);
-    }
-
-    /// Phiên bản async (dùng trong test/runtime, tránh blocking_lock panic).
+    /// Đăng ký khóa công khai tĩnh của peer (cần trước khi gửi tới peer đó).
     pub async fn set_peer_static_async(&self, addr: SocketAddr, pub_key: [u8; 32]) {
         self.peer_statics.lock().await.insert(addr, pub_key);
+    }
+
+    /// Phiên bản sync (ngoài runtime).
+    pub fn set_peer_static(&self, addr: SocketAddr, pub_key: [u8; 32]) {
+        self.peer_statics.blocking_lock().insert(addr, pub_key);
     }
 
     /// Socket addr cục bộ.
@@ -140,36 +149,65 @@ impl Link {
     }
 
     /// Lấy receiver duy nhất — chỉ gọi 1 lần (None nếu đã lấy).
-    pub fn subscribe(&self) -> Option<mpsc::Receiver<(SocketAddr, WireMsg)>> {
-        self.rx.blocking_lock().take()
+    pub async fn subscribe(&self) -> Option<mpsc::Receiver<(SocketAddr, WireMsg)>> {
+        self.rx.lock().await.take()
     }
 
-    /// Gửi cell tới addr. Tự HS qua kênh HS fragmented nếu chưa có session Noise.
+    /// Gửi cell tới addr: tự HS nếu chưa có session, chờ session (2s), gửi mã hóa.
     pub async fn send_cell(&self, addr: SocketAddr, cell: &Cell) -> Result<(), NetError> {
-        let has_session = self.sessions.lock().await.contains_key(&addr);
-        if !has_session {
-            // Chưa có session Noise — gửi qua kênh HS FragmentedPlain (bản rõ cell).
-            return self.send_hs_fragmented(addr, &cell.encode()).await;
+        if !self.sessions.lock().await.contains_key(&addr) {
+            let pubk = *self
+                .peer_statics
+                .lock()
+                .await
+                .get(&addr)
+                .ok_or(NetError::NoSession)?;
+            let mut infl = self.hs_inflight.lock().await;
+            if !infl.contains_key(&addr) {
+                let params: snow::params::NoiseParams =
+                    PATTERN.parse().map_err(|e| noise_err(&e))?;
+                let mut st = snow::Builder::new(params)
+                    .local_private_key(&self.local_static)
+                    .remote_public_key(&pubk)
+                    .build_initiator()
+                    .map_err(|e| noise_err(&e))?;
+                let mut out = vec![0u8; 512];
+                let n = st.write_message(&[], &mut out).map_err(|e| noise_err(&e))?;
+                self.send_hs_fragmented(addr, &out[..n]).await?;
+                infl.insert(addr, st);
+            }
+            drop(infl);
+            // Chờ responder hoàn tất (msg2 về → session xuất hiện):
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !self.sessions.lock().await.contains_key(&addr) {
+                if std::time::Instant::now() >= deadline {
+                    self.hs_inflight.lock().await.remove(&addr);
+                    return Err(NetError::Timeout);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
         }
-        // Có session: mã hóa cell qua transport 1-RTT.
-        let mut sess = self.sessions.lock().await;
-        let sess = sess.get_mut(&addr).unwrap();
-        let mut out = vec![0u8; CELL + 16];
-        let n = sess
-            .transport
-            .write_message(&cell.encode(), &mut out)
-            .map_err(|e| NetError::Crypto(CryptoError::Noise(e.to_string())))?;
-        out.truncate(n);
+        // Có session — mã hóa + gửi:
+        let (n, out) = {
+            let mut sess = self.sessions.lock().await;
+            let ss = sess.get_mut(&addr).ok_or(NetError::NoSession)?;
+            let mut out = vec![0u8; CELL + 16];
+            let n = ss
+                .transport
+                .write_message(&cell.encode(), &mut out)
+                .map_err(|e| noise_err(&e))?;
+            (n, out)
+        };
         self.socket
-            .send_to(&out, addr)
+            .send_to(&out[..n], addr)
             .await
             .map_err(|e| NetError::Io(e.to_string()))?;
         Ok(())
     }
 
-    /// Gửi cell dưới dạng HS fragmented (kênh HS chưa Noise) — kể cả khi local là responder.
+    /// Gửi mảnh HS (bản rõ, kênh 0x7F fragmented).
     async fn send_hs_fragmented(&self, addr: SocketAddr, data: &[u8]) -> Result<(), NetError> {
-        let chunk = HS_MTU - 5; // 1195
+        let chunk = HS_MTU - 5;
         let cnt = data.len().div_ceil(chunk).max(1);
         for i in 0..cnt {
             let a = i * chunk;
@@ -186,59 +224,80 @@ impl Link {
         }
         Ok(())
     }
-
-    /// Nhận thông điệp đã decode (từ task nền) — Node poll.
-    pub async fn recv(&self, rx: &mut mpsc::Receiver<(SocketAddr, WireMsg)>) -> Option<(SocketAddr, WireMsg)> {
-        rx.recv().await
-    }
-
-    /// Đóng link — hủy task nền.
-    pub async fn close(&self) {
-        self.recv_task.abort();
-        let _ = self.socket;
-    }
 }
 
-/// X25519 public key từ local private (đã clamp) — dùng khi gọi set_peer_static.
-pub fn x25519_pub_from_local(priv_key: &[u8; 32]) -> [u8; 32] {
-    x25519_pub_from_clamped(priv_key)
+fn noise_err(e: &impl std::fmt::Display) -> NetError {
+    NetError::Crypto(CryptoError::Noise(e.to_string()))
 }
 
-// NetError thiếu biến thể Noise — thêm vào lib.rs hoặc dùng CryptoError::Noise:
-// (ở trên tôi dùng CryptoError::Noise — cần thêm biến thể này.)
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rand32() -> [u8; 32] {
-        let mut b = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut b);
-        b[0] &= 248;
-        b[31] &= 127;
-        b[31] |= 64;
-        b
+/// Hoàn tất 1 handshake từ msg reassembled: initiator đang chờ coi là msg2,
+/// ngược lại mình là responder (msg1) → trả msg2, insert session 2 chiều.
+async fn handle_hs(
+    sessions: &Mutex<HashMap<SocketAddr, Session>>,
+    inflight: &Mutex<HashMap<SocketAddr, snow::HandshakeState>>,
+    peer_statics: &Mutex<HashMap<SocketAddr, [u8; 32]>>,
+    local_static: [u8; 32],
+    socket: &Arc<UdpSocket>,
+    src: SocketAddr,
+    msg: &[u8],
+) {
+    // 1) Initiator đang chờ msg2:
+    {
+        let mut infl = inflight.lock().await;
+        if let Some(mut st) = infl.remove(&src) {
+            let mut out = vec![0u8; 1024];
+            if st.read_message(msg, &mut out).is_ok() {
+                if let Ok(t) = st.into_transport_mode() {
+                    sessions.lock().await.insert(src, Session { transport: t });
+                    return;
+                }
+            }
+            // Đọc msg2 fail → rơi xuống coi như msg1 (responder mới).
+        }
     }
-
-    #[tokio::test]
-    async fn hs_fragmented_van_tai_cell_dai() {
-        let k1 = rand32();
-        let k2 = rand32();
-        let l1 = Link::bind("127.0.0.1:0".parse().unwrap(), &k1).await.unwrap();
-        let l2 = Link::bind("127.0.0.1:0".parse().unwrap(), &k2).await.unwrap();
-        l1.set_peer_static_async(l2.addr(), x25519_pub_from_local(&k2)).await;
-        l2.set_peer_static_async(l1.addr(), x25519_pub_from_local(&k1)).await;
-        let big = Cell { cid: 3, cmd: crate::cell::Cmd::Relay, flags: 0, payload: vec![0xAB; 1200] };
-        // Gửi trực tiếp qua HS fragmented (không cần session):
-        l1.send_hs_fragmented(l2.addr(), &big.encode()).await.unwrap();
-        // nhận trực tiếp:
-        let mut buf = [0u8; 65535];
-        let (n, _) = l2.socket.recv_from(&mut buf).await.unwrap();
-        assert!(buf[0] == 0x7F);
-        let total = u16::from_le_bytes([buf[1], buf[2]]);
-        assert_eq!(total, 2); // 1280 / 1195 → 2 mảnh
-        let _ = n;
-        l1.close().await;
-        l2.close().await;
+    // 2) Responder: msg1 → msg2:
+    let params: snow::params::NoiseParams = match PATTERN.parse() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let mut st = match snow::Builder::new(params)
+        .local_private_key(&local_static)
+        .build_responder()
+    {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let mut out = vec![0u8; 1024];
+    if st.read_message(msg, &mut out).is_err() {
+        return; // KHÔNG phản hồi — tránh oracle
+    }
+    let mut out2 = vec![0u8; 1024];
+    let n2 = match st.write_message(&[], &mut out2) {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    // Gửi msg2 qua kênh HS fragmented:
+    let chunk = HS_MTU - 5;
+    let cnt = n2.div_ceil(chunk).max(1);
+    for i in 0..cnt {
+        let a = i * chunk;
+        let b = ((i + 1) * chunk).min(n2);
+        let mut p = Vec::with_capacity(5 + (b - a));
+        p.push(0x7F);
+        p.extend_from_slice(&(cnt as u16).to_le_bytes());
+        p.extend_from_slice(&(i as u16).to_le_bytes());
+        p.extend_from_slice(&out2[a..b]);
+        let _ = socket.send_to(&p, src).await;
+    }
+    // Học static của peer (để sau này gửi tới peer này không cần HS ngược):
+    if let Some(r) = st.get_remote_static().map(|k| {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(k);
+        key
+    }) {
+        peer_statics.lock().await.insert(src, r);
+    }
+    if let Ok(t) = st.into_transport_mode() {
+        sessions.lock().await.insert(src, Session { transport: t });
     }
 }
