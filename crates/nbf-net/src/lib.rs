@@ -6,6 +6,7 @@ pub mod cover;
 pub mod link;
 pub mod node;
 pub mod relay;
+pub use builder::*;
 pub use cell::*;
 
 use nbf_crypto::CryptoError;
@@ -19,6 +20,10 @@ pub enum NetError {
     BadCmd(u8),
     #[error("payload quá ngắn")]
     TooShort,
+    #[error("hết thời gian chờ")]
+    Timeout,
+    #[error("chưa có session/circuit")]
+    NoSession,
     #[error("lỗi crypto: {0}")]
     Crypto(#[from] CryptoError),
     #[error("lỗi I/O: {0}")]

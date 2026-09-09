@@ -282,6 +282,58 @@ impl Node {
     async fn handle_relay(self: Arc<Self>, from: SocketAddr, cell: Cell) {
         crate::relay::handle(self, from, cell).await;
     }
+
+    /// Đăng ký stream nhận dữ liệu chiều về (origin side).
+    pub async fn register_stream(&self, cid: u32, stream: u16, tx: mpsc::Sender<Vec<u8>>) {
+        if let Some(CircuitEntry::Origin { streams, .. }) =
+            self.circuits.lock().await.get_mut(&cid)
+        {
+            streams.insert(stream, tx);
+        }
+    }
+
+    /// Mở stream mới — trả Receiver để chờ dữ liệu về.
+    pub async fn open_stream(&self, cid: u32, stream: u16) -> mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel(16);
+        self.register_stream(cid, stream, tx).await;
+        rx
+    }
+
+    /// Đăng ký khóa link của peer (để session Noise sau này).
+    pub async fn ensure_peer_link(&self, addr: SocketAddr, link_pub: [u8; 32]) {
+        self.link.set_peer_static_async(addr, link_pub).await;
+    }
+
+    /// Danh sách node biết được (rt ∩ store) kèm addr cell + link pub.
+    pub async fn route_peers(&self) -> Vec<(NodeId, SocketAddr, [u8; 32])> {
+        let rt = self.dht.rt.read().await.clone();
+        let store = self.dht.store.read().await.clone();
+        let mut out = Vec::new();
+        for c in &rt {
+            if let Some(d) = store.get(&c.node_id) {
+                out.push((c.node_id, d.cell_addr, d.link_pub));
+            }
+        }
+        out
+    }
+
+    /// Tìm descriptor của 1 node (cache trước, rồi DHT value lookup).
+    pub async fn lookup_route(&self, target: NodeId) -> Result<Descriptor, NetError> {
+        if let Some(d) = self.dht_cache.lock().await.get(&target) {
+            return Ok(d.clone());
+        }
+        if let Some(d) = self.dht.store.read().await.get(&target) {
+            self.dht_cache.lock().await.insert(target, d.clone());
+            return Ok(d.clone());
+        }
+        match self.dht.lookup(&target, true).await {
+            Ok(Some(d)) => {
+                self.dht_cache.lock().await.insert(target, d.clone());
+                Ok(d)
+            }
+            _ => Err(NetError::Timeout),
+        }
+    }
 }
 
 impl Clone for CircuitEntry {
