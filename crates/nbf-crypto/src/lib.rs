@@ -44,6 +44,8 @@ pub enum CryptoError {
     Aead,
     #[error("ML-KEM thất bại")]
     Kem,
+    #[error("Noise thất bại: {0}")]
+    Noise(String),
     #[error("header Sphinx không hợp lệ")]
     Sphinx,
     #[error("descriptor không hợp lệ")]

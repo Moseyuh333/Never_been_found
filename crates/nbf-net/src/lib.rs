@@ -6,6 +6,7 @@ pub mod cover;
 pub mod link;
 pub mod node;
 pub mod relay;
+pub use cell::*;
 
 use nbf_crypto::CryptoError;
 use thiserror::Error;
@@ -20,6 +21,6 @@ pub enum NetError {
     TooShort,
     #[error("lỗi crypto: {0}")]
     Crypto(#[from] CryptoError),
-    #[error("link session chưa thiết lập")]
-    NoSession,
+    #[error("lỗi I/O: {0}")]
+    Io(String),
 }
