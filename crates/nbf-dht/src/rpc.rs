@@ -69,7 +69,7 @@ pub enum DhtError {
     #[error("descriptor sai: {0}")]
     BadDesc(String),
     #[error("I/O: {0}")]
-    Io(std::io::Error),
+    Io(#[from] std::io::Error),
 }
 
 /// Mã hóa RPC message thành bytes (magic + type + body).

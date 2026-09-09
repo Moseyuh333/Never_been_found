@@ -102,6 +102,15 @@ impl Descriptor {
         d
     }
 
+    /// Địa chỉ DHT đầy đủ từ descriptor (tiện dùng cho Kademlia).
+    pub fn dht_addr(&self) -> std::net::SocketAddr {
+        let ip = match self.cell_addr.ip() {
+            std::net::IpAddr::V4(v) => v,
+            _ => std::net::Ipv4Addr::UNSPECIFIED,
+        };
+        std::net::SocketAddr::new(std::net::IpAddr::V4(ip), self.dht_port)
+    }
+
     /// Phần được ký = toàn bộ descriptor trừ 64 byte sig cuối.
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = self.to_bytes();
