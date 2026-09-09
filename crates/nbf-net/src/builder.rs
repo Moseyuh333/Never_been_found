@@ -128,3 +128,18 @@ impl CircuitHandle {
         Ok(())
     }
 }
+
+/// Chọn 1 circuit origin đang mở (cho cover DROP) — tái dựng handle nhẹ.
+pub async fn pick_origin(node: &Arc<Node>) -> Option<CircuitHandle> {
+    let found = {
+        let c = node.circuits.lock().await;
+        c.iter().find_map(|(cid, v)| match v {
+            CircuitEntry::Origin { fwd, bwd, tag, .. } => {
+                Some((*cid, fwd.clone(), bwd.clone(), *tag))
+            }
+            _ => None,
+        })
+    }?;
+    let (cid, fwd, bwd, tag) = found;
+    Some(CircuitHandle { node: node.clone(), cid, fwd, bwd, tag })
+}
